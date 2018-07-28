@@ -2,7 +2,6 @@ package io.vertx.test.codegen;
 
 import io.vertx.codegen.type.ClassKind;
 import io.vertx.codegen.ClassModel;
-import io.vertx.codegen.Generator;
 import io.vertx.codegen.MethodInfo;
 import io.vertx.codegen.MethodKind;
 import io.vertx.codegen.type.ParameterizedTypeInfo;
@@ -12,15 +11,21 @@ import io.vertx.codegen.testmodel.TestEnum;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.test.codegen.testapi.VertxGenClass1;
+import io.vertx.test.codegen.testapi.nullable.MethodWithNullableParams;
+import io.vertx.test.codegen.testapi.nullable.MethodWithNullableInheritedParams;
+import io.vertx.test.codegen.testapi.nullable.MethodWithNullableReturn;
 import io.vertx.test.codegen.testapi.nullable.DiamondGenericBottomFluentNullableParam;
+import io.vertx.test.codegen.testapi.nullable.MethodWithCovariantNullableReturn;
 import io.vertx.test.codegen.testapi.nullable.InterfaceWithInvalidListNullableParamOverride;
 import io.vertx.test.codegen.testapi.nullable.InterfaceWithInvalidNullableParamOverride;
 import io.vertx.test.codegen.testapi.nullable.InterfaceWithInvalidNullableReturnOverride;
+import io.vertx.test.codegen.testapi.nullable.InterfaceWithNonNullableParams;
 import io.vertx.test.codegen.testapi.nullable.InterfaceWithNullableReturnMethod;
 import io.vertx.test.codegen.testapi.nullable.MethodWithInvalidNullableTypeArgumentHandler;
 import io.vertx.test.codegen.testapi.nullable.MethodWithInvalidNullableTypeArgumentHandlerAsyncResult;
 import io.vertx.test.codegen.testapi.nullable.MethodWithInvalidNullableTypeArgumentParam;
 import io.vertx.test.codegen.testapi.nullable.MethodWithInvalidNullableTypeArgumentReturn;
+import io.vertx.test.codegen.testapi.nullable.MethodWithListNullableParam;
 import io.vertx.test.codegen.testapi.nullable.MethodWithListNullableParamOverride;
 import io.vertx.test.codegen.testapi.nullable.MethodWithNullableNonAnnotatedObjectParam;
 import io.vertx.test.codegen.testapi.nullable.MethodWithNullableNonAnnotatedTypeVariableHandlerAsyncResult;
@@ -30,8 +35,8 @@ import io.vertx.test.codegen.testapi.nullable.MethodWithNullableNonAnnotatedType
 import io.vertx.test.codegen.testapi.nullable.MethodWithNullableParamOverride;
 import io.vertx.test.codegen.testapi.nullable.InterfaceWithNullableReturnOverride;
 import io.vertx.test.codegen.testapi.nullable.MethodWithHandlerNullable;
-import io.vertx.test.codegen.testapi.nullable.MethodWithInvalidHandlerNullableVoid;
-import io.vertx.test.codegen.testapi.nullable.MethodWithInvalidHandlerAsyncResultNullableVoid;
+import io.vertx.test.codegen.testapi.nullable.MethodWithHandlerNullableVoid;
+import io.vertx.test.codegen.testapi.nullable.MethodWithHandlerAsyncResultNullableVoid;
 import io.vertx.test.codegen.testapi.nullable.MethodWithInvalidHandlerNullableAsyncResult;
 import io.vertx.test.codegen.testapi.nullable.MethodWithInvalidNullableBooleanReturn;
 import io.vertx.test.codegen.testapi.nullable.MethodWithInvalidNullableByteReturn;
@@ -46,7 +51,8 @@ import io.vertx.test.codegen.testapi.nullable.MethodWithInvalidOverloadedNullabl
 import io.vertx.test.codegen.testapi.nullable.MethodWithNullableHandler;
 import io.vertx.test.codegen.testapi.nullable.MethodWithNullableHandlerAsyncResult;
 import io.vertx.test.codegen.testapi.nullable.MethodWithNullableParam;
-import io.vertx.test.codegen.testapi.nullable.MethodWithNullableReturn;
+import io.vertx.test.codegen.testapi.nullable.MethodWithNullableReturns;
+import io.vertx.test.codegen.testapi.nullable.MethodWithNullableStringHandlerAsyncResult;
 import io.vertx.test.codegen.testapi.nullable.MethodWithNullableTypeArgReturn;
 import io.vertx.test.codegen.testapi.nullable.MethodWithNullableTypeVariableHandlerAsyncResult;
 import io.vertx.test.codegen.testapi.nullable.MethodWithNullableTypeVariableHandler;
@@ -55,11 +61,12 @@ import io.vertx.test.codegen.testapi.nullable.MethodWithNullableTypeVariableRetu
 import io.vertx.test.codegen.testapi.nullable.MethodWithOverloadedNullableParam;
 import org.junit.Test;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -73,27 +80,19 @@ public class ClassNullableTest extends ClassTestBase {
   // Invalid params
 
   @Test
-  public void testMethodWithHandlerNullableVoid() throws Exception {
-    assertGenInvalid(MethodWithInvalidHandlerNullableVoid.class);
-  }
-
-  @Test
   public void testMethodWithInvalidHandlerNullableAsyncResult() throws Exception {
     assertGenInvalid(MethodWithInvalidHandlerNullableAsyncResult.class);
   }
 
   @Test
-  public void testMethodWithInvalidHandlerAsyncResultNullableVoid() throws Exception {
-    assertGenInvalid(MethodWithInvalidHandlerAsyncResultNullableVoid.class);
-  }
-
-  @Test
   public void testInterfaceWithInvalidNullableParamOverride() throws Exception {
+    assertGenInvalid(InterfaceWithInvalidNullableParamOverride.class, InterfaceWithNonNullableParams.class);
     assertGenInvalid(InterfaceWithInvalidNullableParamOverride.class);
   }
 
   @Test
   public void testInterfaceWithInvalidListNullableParamOverride() throws Exception {
+    assertGenInvalid(InterfaceWithInvalidListNullableParamOverride.class, InterfaceWithNonNullableParams.class);
     assertGenInvalid(InterfaceWithInvalidListNullableParamOverride.class);
   }
 
@@ -211,30 +210,50 @@ public class ClassNullableTest extends ClassTestBase {
 
   @Test
   public void testInterfaceWithNullableParamOverride() throws Exception {
-    generateClass(model -> {
+    Consumer<ClassModel> test = model -> {
       List<MethodInfo> methods = model.getMethods();
       assertEquals(1, methods.size());
       MethodInfo mi1 = methods.get(0);
       assertTrue(mi1.getParams().get(0).isNullable());
-    }, MethodWithNullableParamOverride.class, MethodWithNullableParam.class);
+    };
+    // generateClass(test, MethodWithNullableParamOverride.class, MethodWithNullableParam.class);
+    generateClass(test, MethodWithNullableParamOverride.class);
   }
 
   @Test
   public void testInterfaceWithListNullableParamOverride() throws Exception {
-    ClassModel model = new Generator().generateClass(MethodWithListNullableParamOverride.class);
-    List<MethodInfo> methods = model.getMethods();
-    assertEquals(1, methods.size());
-    MethodInfo mi2 = methods.get(0);
-    assertTrue(((ParameterizedTypeInfo) mi2.getParams().get(0).getType()).getArg(0).isNullable());
+    generateClass(model -> {
+      List<MethodInfo> methods = model.getMethods();
+      assertEquals(1, methods.size());
+      MethodInfo mi2 = methods.get(0);
+      assertTrue(((ParameterizedTypeInfo) mi2.getParams().get(0).getType()).getArg(0).isNullable());
+    }, MethodWithListNullableParamOverride.class, MethodWithListNullableParam.class);
   }
 
   @Test
-  public void testMethodWithHandlerNullable() throws Exception {
-    ClassModel model = new Generator().generateClass(MethodWithHandlerNullable.class);
-    List<MethodInfo> methods = model.getMethods();
-    assertEquals(1, methods.size());
-    MethodInfo mi1 = methods.get(0);
-    assertTrue(((ParameterizedTypeInfo) mi1.getParams().get(0).getType()).getArg(0).isNullable());
+  public void testMethodWithNullableInheritedParams() throws Exception {
+    Consumer<ClassModel> check = model -> {
+      List<MethodInfo> methods = model.getMethods();
+      assertEquals(1, methods.size());
+      MethodInfo mi2 = methods.get(0);
+      assertTrue(mi2.getParams().get(0).getType().isNullable());
+      assertTrue(((ParameterizedTypeInfo) mi2.getParams().get(1).getType()).getArg(0).isNullable());
+      assertTrue(((ParameterizedTypeInfo) ((ParameterizedTypeInfo) mi2.getParams().get(2).getType()).getArg(0)).getArg(0).isNullable());
+    };
+    generateClass(check, MethodWithNullableInheritedParams.class, MethodWithNullableParams.class);
+    generateClass(check, MethodWithNullableInheritedParams.class);
+  }
+
+  @Test
+  public void testMethodWithCovariantNullableReturn() throws Exception {
+    Consumer<ClassModel> check = model -> {
+      List<MethodInfo> methods = model.getMethods();
+      assertEquals(1, methods.size());
+      MethodInfo mi2 = methods.get(0);
+      assertTrue(mi2.getReturnType().isNullable());
+    };
+    generateClass(check, MethodWithCovariantNullableReturn.class, MethodWithNullableReturn.class);
+    generateClass(check, MethodWithCovariantNullableReturn.class);
   }
 
   @Test
@@ -271,14 +290,18 @@ public class ClassNullableTest extends ClassTestBase {
   }
 
   @Test
-  public void testMethodWithNullableTypeVariableHandler() throws Exception {
-    generateClass(model -> {
-      List<MethodInfo> methods = model.getMethods();
-      assertEquals(1, methods.size());
-      MethodInfo mi1 = methods.get(0);
-      checkMethod(mi1, "method", 1, "void", MethodKind.HANDLER);
-      assertTrue(mi1.getParams().get(0).isNullableCallback());
-    }, MethodWithNullableTypeVariableHandler.class);
+  public void testMethodWithHandlerNullable() throws Exception {
+    for (Class<?> clazz : Arrays.asList(
+      MethodWithHandlerNullable.class,
+      MethodWithNullableTypeVariableHandler.class,
+      MethodWithHandlerNullableVoid.class)) {
+      generateClass(model -> {
+        List<MethodInfo> methods = model.getMethods();
+        assertEquals(1, methods.size());
+        MethodInfo mi1 = methods.get(0);
+        assertTrue(((ParameterizedTypeInfo) mi1.getParams().get(0).getType()).getArg(0).isNullable());
+      }, clazz);
+    }
   }
 
   @Test
@@ -288,19 +311,35 @@ public class ClassNullableTest extends ClassTestBase {
       assertEquals(1, methods.size());
       MethodInfo mi1 = methods.get(0);
       checkMethod(mi1, "method", 1, "void", MethodKind.HANDLER);
-      assertTrue(mi1.getParams().get(0).isNullableCallback());
+      assertFalse(mi1.getParams().get(0).isNullableCallback());
     }, MethodWithNullableNonAnnotatedTypeVariableHandler.class);
   }
 
   @Test
-  public void testMethodWithNullableTypeVariableHandlerAsyncResult() throws Exception {
+  public void testMethodWithHandlerAsyncResultNullable() throws Exception {
+    for (Class<?> clazz : Arrays.asList(
+      MethodWithNullableTypeVariableHandlerAsyncResult.class,
+      MethodWithNullableStringHandlerAsyncResult.class,
+      MethodWithHandlerAsyncResultNullableVoid.class)) {
+      generateClass(model -> {
+        List<MethodInfo> methods = model.getMethods();
+        assertEquals(1, methods.size());
+        MethodInfo mi1 = methods.get(0);
+        checkMethod(mi1, "method", 1, "void", MethodKind.FUTURE);
+        assertTrue(mi1.getParams().get(0).isNullableCallback());
+      }, clazz);
+    }
+  }
+
+  @Test
+  public void testMethodWithNullableStringHandlerAsyncResult() throws Exception {
     generateClass(model -> {
       List<MethodInfo> methods = model.getMethods();
       assertEquals(1, methods.size());
       MethodInfo mi1 = methods.get(0);
       checkMethod(mi1, "method", 1, "void", MethodKind.FUTURE);
       assertTrue(mi1.getParams().get(0).isNullableCallback());
-    }, MethodWithNullableTypeVariableHandlerAsyncResult.class);
+    }, MethodWithNullableStringHandlerAsyncResult.class);
   }
 
   @Test
@@ -310,7 +349,7 @@ public class ClassNullableTest extends ClassTestBase {
       assertEquals(1, methods.size());
       MethodInfo mi1 = methods.get(0);
       checkMethod(mi1, "method", 1, "void", MethodKind.FUTURE);
-      assertTrue(mi1.getParams().get(0).isNullableCallback());
+      assertFalse(mi1.getParams().get(0).isNullableCallback());
     }, MethodWithNullableNonAnnotatedTypeVariableHandlerAsyncResult.class);
   }
 
@@ -338,8 +377,7 @@ public class ClassNullableTest extends ClassTestBase {
   // Valid returns
 
   @Test
-  public <T> void testMethodWithNullableReturn() throws Exception {
-    AtomicBoolean checkModel = new AtomicBoolean();
+  public <T> void testMethodWithNullableReturns() throws Exception {
     TypeLiteral<T> typeLiteral = new TypeLiteral<T>() {};
     generateClass(model -> {
       List<MethodInfo> methods = model.getMethods();
@@ -394,19 +432,15 @@ public class ClassNullableTest extends ClassTestBase {
       checkMethod(methods.get(47), "nullableMapStringReturn", 0, new TypeLiteral<Map<String, String>>() {}, MethodKind.OTHER);
       checkMethod(methods.get(48), "nullableMapJsonObjectReturn", 0, new TypeLiteral<Map<String, JsonObject>>() {}, MethodKind.OTHER);
       checkMethod(methods.get(49), "nullableMapJsonArrayReturn", 0, new TypeLiteral<Map<String, JsonArray>>() {}, MethodKind.OTHER);
-      if (!checkModel.compareAndSet(false, true)) {
-        // nullableTypeVariableReturn does not pass with model api
-        methods.remove(10);
-      }
       methods.forEach(m -> {
         assertTrue("Expects " + m.getName() + " to have nullable return type", m.isNullableReturn());
       });
-    }, MethodWithNullableReturn.class);
+    }, MethodWithNullableReturns.class);
   }
 
   @Test
   public void testMethodWithNullableTypeArgReturn() throws Exception {
-    ClassModel model = new Generator().generateClass(MethodWithNullableTypeArgReturn.class);
+    ClassModel model = new GeneratorHelper().generateClass(MethodWithNullableTypeArgReturn.class);
     List<MethodInfo> methods = model.getMethods();
     assertEquals(36, methods.size());
     checkMethod(methods.get(0), "listNullableByteReturn", 0, new TypeLiteral<List<Byte>>() {}, MethodKind.OTHER);
@@ -465,8 +499,7 @@ public class ClassNullableTest extends ClassTestBase {
 
   @Test
   public void testDiamondFluentNullableReturn() throws Exception {
-    ClassModel model = new Generator().generateClass(DiamondGenericBottomFluentNullableParam.class);
-
+    ClassModel model = new GeneratorHelper().generateClass(DiamondGenericBottomFluentNullableParam.class);
   }
 
   @Test
@@ -487,29 +520,35 @@ public class ClassNullableTest extends ClassTestBase {
       assertEquals(1, methods.size());
       MethodInfo mi1 = methods.get(0);
       checkMethod(mi1, "method", 0, "T", MethodKind.OTHER);
-      assertTrue(mi1.isNullableReturn());
+      assertFalse(mi1.isNullableReturn());
     }, MethodWithNullableNonAnnotatedTypeVariableReturn.class);
   }
 
   private void generateClass(Consumer<ClassModel> test, Class<?> clazz, Class<?>... rest) throws Exception {
-    ClassModel model = new Generator().generateClass(clazz);
-    test.accept(model);
-    Thread thread = Thread.currentThread();
-    ClassLoader prev = thread.getContextClassLoader();
-    thread.setContextClassLoader(new ClassLoader(prev) {
-      @Override
-      public Class<?> loadClass(String name) throws ClassNotFoundException {
-        if (name.startsWith("io.vertx.test.codegen.testapi.nullable.")) {
-          throw new ClassNotFoundException();
-        }
-        return super.loadClass(name);
+    blacklist(() -> {
+      try {
+        test.accept(new GeneratorHelper().generateClass(clazz));
+      } catch (Exception e) {
+        throw new AssertionError(e);
       }
-    });
-    try {
-      model = new Generator().generateClass(clazz, rest);
-    } finally {
-      thread.setContextClassLoader(prev);
-    }
-    test.accept(model);
+    }, Stream.of(clazz));
+    blacklist(() -> {
+      try {
+        test.accept(new GeneratorHelper().generateClass(clazz, rest));
+      } catch (Exception e) {
+        throw new AssertionError(e);
+      }
+    }, Stream.concat(Stream.of(clazz), Stream.of(rest)));
+  }
+
+  @Override
+  void assertGenInvalid(Class<?> c, Class<?>... rest) throws Exception {
+    blacklist(() -> {
+      try {
+        ClassNullableTest.super.assertGenInvalid(c, rest);
+      } catch (Exception e) {
+        throw new AssertionError(e);
+      }
+    }, Stream.concat(Stream.of(c), Stream.of(rest)));
   }
 }

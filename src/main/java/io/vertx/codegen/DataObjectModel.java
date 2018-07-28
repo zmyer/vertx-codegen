@@ -3,41 +3,24 @@ package io.vertx.codegen;
 import io.vertx.codegen.annotations.DataObject;
 import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.doc.Doc;
-import io.vertx.codegen.type.ClassKind;
-import io.vertx.codegen.type.ClassTypeInfo;
-import io.vertx.codegen.type.TypeMirrorFactory;
-import io.vertx.codegen.type.ParameterizedTypeInfo;
-import io.vertx.codegen.type.TypeInfo;
+import io.vertx.codegen.type.*;
 import io.vertx.core.json.JsonObject;
 
-import javax.annotation.processing.Messager;
-import javax.lang.model.element.Element;
-import javax.lang.model.element.ElementKind;
-import javax.lang.model.element.ExecutableElement;
-import javax.lang.model.element.Modifier;
-import javax.lang.model.element.TypeElement;
-import javax.lang.model.element.VariableElement;
+import javax.annotation.processing.ProcessingEnvironment;
+import javax.lang.model.element.*;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.time.Instant;
+import java.util.*;
+import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static java.util.stream.Collectors.*;
+import static java.util.stream.Collectors.toList;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
@@ -49,26 +32,33 @@ public class DataObjectModel implements Model {
   private final Doc.Factory docFactory;
   private final TypeMirrorFactory typeFactory;
   private final TypeElement modelElt;
-  private boolean processed = false;
+  private final Map<String, PropertyInfo> propertyMap = new LinkedHashMap<>();
+  private final Set<ClassTypeInfo> superTypes = new LinkedHashSet<>();
+  private final Set<ClassTypeInfo> abstractSuperTypes = new LinkedHashSet<>();
+  private final Set<ClassTypeInfo> importedTypes = new LinkedHashSet<>();
+  private final AnnotationValueInfoFactory annotationValueInfoFactory;
+  private boolean processed;
   private boolean concrete;
   private boolean isClass;
   private boolean generateConverter;
   private boolean inheritConverter;
-  private final Map<String, PropertyInfo> propertyMap = new LinkedHashMap<>();
-  private final Set<ClassTypeInfo> superTypes = new LinkedHashSet<>();
+  private boolean publicConverter;
+  private int constructors;
+  private boolean deprecated;
   private ClassTypeInfo superType;
-  private final Set<ClassTypeInfo> abstractSuperTypes = new LinkedHashSet<>();
-  private final Set<ClassTypeInfo> importedTypes = new LinkedHashSet<>();
   private ClassTypeInfo type;
   private Doc doc;
   private boolean jsonifiable;
+  private List<AnnotationValueInfo> annotations;
 
-  public DataObjectModel(Elements elementUtils, Types typeUtils, TypeElement modelElt, Messager messager) {
-    this.elementUtils = elementUtils;
-    this.typeUtils = typeUtils;
+  public DataObjectModel(ProcessingEnvironment env, TypeElement modelElt) {
+    this.elementUtils = env.getElementUtils();
+    this.typeUtils = env.getTypeUtils();
     this.typeFactory = new TypeMirrorFactory(elementUtils, typeUtils);
-    this.docFactory = new Doc.Factory(messager, elementUtils, typeUtils, typeFactory, modelElt);
+    this.docFactory = new Doc.Factory(env.getMessager(), elementUtils, typeUtils, typeFactory, modelElt);
     this.modelElt = modelElt;
+    this.annotationValueInfoFactory = new AnnotationValueInfoFactory(typeFactory);
+    this.deprecated = modelElt.getAnnotation(Deprecated.class) != null;
   }
 
   @Override
@@ -110,6 +100,11 @@ public class DataObjectModel implements Model {
     return propertyMap;
   }
 
+  @Override
+  public List<AnnotationValueInfo> getAnnotations() {
+    return annotations;
+  }
+
   public ClassTypeInfo getSuperType() {
     return superType;
   }
@@ -142,6 +137,20 @@ public class DataObjectModel implements Model {
     return inheritConverter;
   }
 
+  public boolean isPublicConverter() {
+    return publicConverter;
+  }
+
+  public boolean hasEmptyConstructor() {
+    return (constructors & 1) == 1;
+  }
+  /**
+   * @return {@code true} if the class has a {@code @Deprecated} annotation
+   */
+  public boolean isDeprecated() {
+    return deprecated;
+  }
+
   @Override
   public Map<String, Object> getVars() {
     Map<String, Object> vars = Model.super.getVars();
@@ -149,6 +158,7 @@ public class DataObjectModel implements Model {
     vars.put("doc", doc);
     vars.put("generateConverter", generateConverter);
     vars.put("inheritConverter", inheritConverter);
+    vars.put("publicConverter", publicConverter);
     vars.put("concrete", concrete);
     vars.put("isClass", isClass);
     vars.put("properties", propertyMap.values());
@@ -157,13 +167,16 @@ public class DataObjectModel implements Model {
     vars.put("superType", superType);
     vars.put("abstractSuperTypes", abstractSuperTypes);
     vars.put("jsonifiable", jsonifiable);
+    vars.put("hasEmptyConstructor", hasEmptyConstructor());
+    vars.put("deprecated", deprecated);
     return vars;
   }
 
-  boolean process() {
+  public boolean process() {
     if (!processed) {
       if (modelElt.getKind() == ElementKind.INTERFACE || modelElt.getKind() == ElementKind.CLASS) {
         traverse();
+        processTypeAnnotations();
         processImportedTypes();
         processed = true;
         return true;
@@ -177,6 +190,7 @@ public class DataObjectModel implements Model {
   private void traverse() {
     DataObject ann = modelElt.getAnnotation(DataObject.class);
     this.generateConverter = ann.generateConverter();
+    this.publicConverter = ann.publicConverter();
     this.inheritConverter = ann.inheritConverter();
     this.isClass = modelElt.getKind() == ElementKind.CLASS;
     this.concrete = isClass && !modelElt.getModifiers().contains(Modifier.ABSTRACT);
@@ -204,19 +218,18 @@ public class DataObjectModel implements Model {
       superTypes.add(superType);
     }
 
-    int result = 0;
     List<ExecutableElement> methodsElt = new ArrayList<>();
     for (Element enclosedElt : elementUtils.getAllMembers(modelElt)) {
       switch (enclosedElt.getKind()) {
         case CONSTRUCTOR:
           ExecutableElement constrElt = (ExecutableElement) enclosedElt;
-          result |= processConstructor(constrElt);
+          processConstructor(constrElt);
           break;
         case METHOD: {
           ExecutableElement methodElt = (ExecutableElement) enclosedElt;
           if (methodElt.getSimpleName().toString().equals("toJson") &&
-              methodElt.getParameters().isEmpty() &&
-              typeFactory.create(methodElt.getReturnType()).getKind() == ClassKind.JSON_OBJECT) {
+            methodElt.getParameters().isEmpty() &&
+            typeFactory.create(methodElt.getReturnType()).getKind() == ClassKind.JSON_OBJECT) {
             jsonifiable = true;
           }
           if (methodElt.getAnnotation(GenIgnore.class) == null) {
@@ -229,7 +242,7 @@ public class DataObjectModel implements Model {
 
     processMethods(methodsElt);
 
-    boolean hasJsonConstructor = (result & 2) == 2;
+    boolean hasJsonConstructor = (constructors & 2) == 2;
 
     if (concrete && !hasJsonConstructor) {
       throw new GenException(modelElt, "Data object " + modelElt + " class does not have a constructor " + modelElt.getSimpleName() + "(" + JsonObject.class.getSimpleName() + ")");
@@ -242,12 +255,16 @@ public class DataObjectModel implements Model {
     props.forEach(prop -> propertyMap.put(prop.name, prop));
   }
 
+  private void processTypeAnnotations() {
+    this.annotations = elementUtils.getAllAnnotationMirrors(modelElt).stream().map(annotationValueInfoFactory::processAnnotation).collect(Collectors.toList());
+  }
+
   private void processImportedTypes() {
     for (PropertyInfo property : propertyMap.values()) {
       property.type.collectImports(importedTypes);
     }
     importedTypes.addAll(superTypes.stream().collect(toList()));
-    for (Iterator<ClassTypeInfo> i = importedTypes.iterator();i.hasNext();) {
+    for (Iterator<ClassTypeInfo> i = importedTypes.iterator(); i.hasNext(); ) {
       ClassTypeInfo importedType = i.next();
       if (importedType.getPackageName().equals(type.getPackageName())) {
         i.remove();
@@ -255,7 +272,7 @@ public class DataObjectModel implements Model {
     }
   }
 
-  private int processConstructor(ExecutableElement constrElt) {
+  private void processConstructor(ExecutableElement constrElt) {
     if (constrElt.getModifiers().contains(Modifier.PUBLIC)) {
       Element ownerElt = constrElt.getEnclosingElement();
       if (ownerElt.equals(modelElt)) {
@@ -266,34 +283,52 @@ public class DataObjectModel implements Model {
           if (ti instanceof ClassTypeInfo) {
             ClassTypeInfo cl = (ClassTypeInfo) ti;
             if (cl.getKind() == ClassKind.JSON_OBJECT) {
-              return 2;
+              constructors |= 2;
             }
           }
+        } else if (size == 0) {
+          constructors |= 1;
         }
       }
     }
-
-    return 0;
   }
 
+
+
+  @SuppressWarnings("unchecked")
   private void processMethods(List<ExecutableElement> methodsElt) {
 
     Map<String, ExecutableElement> getters = new HashMap<>();
     Map<String, ExecutableElement> setters = new HashMap<>();
     Map<String, ExecutableElement> adders = new HashMap<>();
+    Map<String, List<AnnotationMirror>> annotations = new HashMap<>();
+
+    BiFunction<List<AnnotationMirror>, List<AnnotationMirror>, List<AnnotationMirror>> merger = (a, b) -> {
+      if (b.size() > 0) {
+        if (!(a instanceof ArrayList)) {
+          a = new ArrayList<>(a);
+        }
+        a.addAll(b);
+      }
+      return a;
+    };
 
     while (methodsElt.size() > 0) {
       ExecutableElement methodElt = methodsElt.remove(0);
-      if (((TypeElement)methodElt.getEnclosingElement()).getQualifiedName().toString().equals("java.lang.Object")) {
+      if (((TypeElement) methodElt.getEnclosingElement()).getQualifiedName().toString().equals("java.lang.Object") ||
+        methodElt.getModifiers().contains(Modifier.STATIC) ||
+        !methodElt.getModifiers().contains(Modifier.PUBLIC)) {
         continue;
       }
       String methodName = methodElt.getSimpleName().toString();
       if (methodName.startsWith("get") && methodName.length() > 3 && Character.isUpperCase(methodName.charAt(3)) && methodElt.getParameters().isEmpty() && methodElt.getReturnType().getKind() != TypeKind.VOID) {
         String name = Helper.normalizePropertyName(methodName.substring(3));
         getters.put(name, methodElt);
+        annotations.merge(name, (List<AnnotationMirror>) elementUtils.getAllAnnotationMirrors(methodElt), merger);
       } else if (methodName.startsWith("is") && methodName.length() > 2 && Character.isUpperCase(methodName.charAt(2)) && methodElt.getParameters().isEmpty() && methodElt.getReturnType().getKind() != TypeKind.VOID) {
         String name = Helper.normalizePropertyName(methodName.substring(2));
         getters.put(name, methodElt);
+        annotations.merge(name, (List<AnnotationMirror>) elementUtils.getAllAnnotationMirrors(methodElt), merger);
       } else if ((methodName.startsWith("set") || methodName.startsWith("add")) && methodName.length() > 3 && Character.isUpperCase(methodName.charAt(3))) {
         String prefix = methodName.substring(0, 3);
         String name = Helper.normalizePropertyName(methodName.substring(3));
@@ -304,14 +339,16 @@ public class DataObjectModel implements Model {
           } else {
             name += "s";
           }
-          TypeMirror t= methodElt.getParameters().get(0).asType();
+          TypeMirror t = methodElt.getParameters().get(0).asType();
           if (numParams == 1 || (numParams == 2 && t.getKind() == TypeKind.DECLARED &&
-              ((TypeElement)((DeclaredType)t).asElement()).getQualifiedName().toString().equals("java.lang.String"))) {
+            ((TypeElement) ((DeclaredType) t).asElement()).getQualifiedName().toString().equals("java.lang.String"))) {
             adders.put(name, methodElt);
+            annotations.merge(name, (List<AnnotationMirror>) elementUtils.getAllAnnotationMirrors(methodElt), merger);
           }
         } else {
           if (numParams == 1) {
             setters.put(name, methodElt);
+            annotations.merge(name, (List<AnnotationMirror>) elementUtils.getAllAnnotationMirrors(methodElt), merger);
           }
         }
       }
@@ -323,17 +360,25 @@ public class DataObjectModel implements Model {
     names.addAll(adders.keySet());
 
     for (String name : names) {
-      processMethod(name, getters.get(name), setters.get(name), adders.get(name));
+      //Check annotations on field
+      List<? extends AnnotationMirror> list = getElement().getEnclosedElements().stream()
+        .filter(e -> e.getKind().equals(ElementKind.FIELD) && e.getSimpleName().toString().equals(name))
+        .flatMap(e -> elementUtils.getAllAnnotationMirrors(e).stream()).collect(Collectors.toList());
+      if (list.size() > 0) {
+        annotations.merge(name, (List<AnnotationMirror>) list, merger);
+      }
     }
-
-
+    for (String name : names) {
+      processMethod(name, getters.get(name), setters.get(name), adders.get(name), annotations.get(name));
+    }
   }
 
-  private void processMethod(String name, ExecutableElement getterElt, ExecutableElement setterElt, ExecutableElement adderElt) {
+  private void processMethod(String name, ExecutableElement getterElt, ExecutableElement setterElt, ExecutableElement adderElt, List<AnnotationMirror> annotationMirrors) {
 
     PropertyKind propKind = null;
     TypeInfo propType = null;
     TypeMirror propTypeMirror = null;
+    boolean propertyDeprecated = false;
 
     //
     if (setterElt != null) {
@@ -341,15 +386,16 @@ public class DataObjectModel implements Model {
       propTypeMirror = paramElt.asType();
       propType = typeFactory.create(propTypeMirror);
       propKind = PropertyKind.forType(propType.getKind());
+      propertyDeprecated |= setterElt.getAnnotation(Deprecated.class) != null;
       switch (propKind) {
         case LIST:
         case SET:
           propType = ((ParameterizedTypeInfo) propType).getArgs().get(0);
-          propTypeMirror = ((DeclaredType)propTypeMirror).getTypeArguments().get(0);
+          propTypeMirror = ((DeclaredType) propTypeMirror).getTypeArguments().get(0);
           break;
         case MAP:
           propType = ((ParameterizedTypeInfo) propType).getArgs().get(1);
-          propTypeMirror = ((DeclaredType)propTypeMirror).getTypeArguments().get(1);
+          propTypeMirror = ((DeclaredType) propTypeMirror).getTypeArguments().get(1);
           break;
       }
     }
@@ -359,15 +405,16 @@ public class DataObjectModel implements Model {
       TypeMirror getterTypeMirror = getterElt.getReturnType();
       TypeInfo getterType = typeFactory.create(getterTypeMirror);
       PropertyKind getterKind = PropertyKind.forType(getterType.getKind());
+      propertyDeprecated |= getterElt.getAnnotation(Deprecated.class) != null;
       switch (getterKind) {
         case LIST:
         case SET:
           getterType = ((ParameterizedTypeInfo) getterType).getArgs().get(0);
-          getterTypeMirror = ((DeclaredType)getterTypeMirror).getTypeArguments().get(0);
+          getterTypeMirror = ((DeclaredType) getterTypeMirror).getTypeArguments().get(0);
           break;
         case MAP:
           getterType = ((ParameterizedTypeInfo) getterType).getArgs().get(1);
-          getterTypeMirror = ((DeclaredType)getterTypeMirror).getTypeArguments().get(1);
+          getterTypeMirror = ((DeclaredType) getterTypeMirror).getTypeArguments().get(1);
           break;
       }
       if (propType != null) {
@@ -386,6 +433,7 @@ public class DataObjectModel implements Model {
 
     //
     if (adderElt != null) {
+      propertyDeprecated |= adderElt.getAnnotation(Deprecated.class) != null;
       switch (adderElt.getParameters().size()) {
         case 1: {
           VariableElement paramElt = adderElt.getParameters().get(0);
@@ -445,8 +493,14 @@ public class DataObjectModel implements Model {
       case DATA_OBJECT:
         Element propTypeElt = typeUtils.asElement(propTypeMirror);
         jsonifiable = propTypeElt.getAnnotation(DataObject.class) == null ||
-            Helper.isJsonifiable(elementUtils, typeUtils, (TypeElement)propTypeElt);
+          Helper.isJsonifiable(elementUtils, typeUtils, (TypeElement) propTypeElt);
         break;
+      case OTHER:
+        if (propType.getName().equals(Instant.class.getName())) {
+          jsonifiable = true;
+          break;
+        }
+        return;
       default:
         return;
     }
@@ -462,13 +516,13 @@ public class DataObjectModel implements Model {
         Function<Boolean, Stream<ExecutableElement>> overridenMeths = (annotated) -> {
           Set<DeclaredType> ancestorTypes = Helper.resolveAncestorTypes(modelElt, true, true);
           return ancestorTypes.
-              stream().
-              map(DeclaredType::asElement).
-              filter(elt -> !annotated || elt.getAnnotation(DataObject.class) != null).
-              flatMap(Helper.cast(TypeElement.class)).
-              flatMap(elt -> elementUtils.getAllMembers(elt).stream()).
-              flatMap(Helper.instanceOf(ExecutableElement.class)).
-              filter(executableElt -> executableElt.getKind() == ElementKind.METHOD && elementUtils.overrides(methodElt, executableElt, modelElt));
+            stream().
+            map(DeclaredType::asElement).
+            filter(elt -> !annotated || elt.getAnnotation(DataObject.class) != null).
+            flatMap(Helper.cast(TypeElement.class)).
+            flatMap(elt -> elementUtils.getAllMembers(elt).stream()).
+            flatMap(Helper.instanceOf(ExecutableElement.class)).
+            filter(executableElt -> executableElt.getKind() == ElementKind.METHOD && elementUtils.overrides(methodElt, executableElt, modelElt));
         };
 
         //
@@ -476,9 +530,9 @@ public class DataObjectModel implements Model {
           doc = docFactory.createDoc(methodElt);
           if (doc == null) {
             Optional<Doc> first = overridenMeths.apply(false).
-                map(docFactory::createDoc).
-                filter(d -> d != null).
-                findFirst();
+              map(docFactory::createDoc).
+              filter(d -> d != null).
+              findFirst();
             doc = first.orElse(null);
           }
         }
@@ -497,14 +551,18 @@ public class DataObjectModel implements Model {
       }
     }
 
+    List<AnnotationValueInfo> annotationValueInfos = new ArrayList<>();
+
+    if (annotationMirrors != null) {
+      annotationMirrors.stream().map(annotationValueInfoFactory::processAnnotation).forEach(annotationValueInfos::add);
+    }
+
     PropertyInfo property = new PropertyInfo(declared, name, doc, propType,
-        setterElt != null ? setterElt.getSimpleName().toString() : null,
-        adderElt != null ? adderElt.getSimpleName().toString() : null,
-        getterElt != null ? getterElt.getSimpleName().toString() : null,
-        propKind, jsonifiable);
+      setterElt != null ? setterElt.getSimpleName().toString() : null,
+      adderElt != null ? adderElt.getSimpleName().toString() : null,
+      getterElt != null ? getterElt.getSimpleName().toString() : null,
+      annotationValueInfos, propKind, jsonifiable, propertyDeprecated);
     propertyMap.put(property.name, property);
   }
-
-
 
 }

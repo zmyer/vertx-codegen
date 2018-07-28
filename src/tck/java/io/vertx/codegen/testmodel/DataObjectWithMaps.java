@@ -1,14 +1,14 @@
 package io.vertx.codegen.testmodel;
 
-import io.vertx.codegen.annotations.DataObject;
-import io.vertx.core.json.JsonArray;
-import io.vertx.core.json.JsonObject;
-
+import java.time.Instant;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+
+import io.vertx.codegen.annotations.DataObject;
+import io.vertx.core.json.JsonArray;
+import io.vertx.core.json.JsonObject;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
@@ -35,9 +35,8 @@ public class DataObjectWithMaps {
   private static <T> Map<String, T> fromObject(JsonObject obj, String name, Function<Object, T> converter) {
     JsonObject array = obj.getJsonObject(name);
     if (array != null) {
-      Map<String, Object> map = array.getMap();
-      map.entrySet().forEach(entry -> entry.setValue(converter.apply(entry.getValue())));
-      return (Map<String, T>) map;
+      return array.stream()
+        .collect(Collectors.toMap(entry -> entry.getKey(), entry -> converter.apply(entry.getValue())));
     } else {
       return null;
     }
@@ -50,6 +49,7 @@ public class DataObjectWithMaps {
   Map<String, Double> doubleValues = new HashMap<>();
   Map<String, Boolean> booleanValues = new HashMap<>();
   Map<String, String> stringValues = new HashMap<>();
+  Map<String, Instant> instantValues = new HashMap<>();
   Map<String, JsonObject> jsonObjectValues = new HashMap<>();
   Map<String, JsonArray> jsonArrayValues = new HashMap<>();
   Map<String, TestDataObject> dataObjectValues = new HashMap<>();
@@ -71,9 +71,10 @@ public class DataObjectWithMaps {
     floatValues = fromObject(json, "floatValues", o -> Float.parseFloat(o.toString()));
     doubleValues = fromObject(json, "doubleValues");
     stringValues = fromObject(json, "stringValues");
-    jsonObjectValues = fromObject(json, "jsonObjectValues", o -> new JsonObject((Map<String, Object>) o));
-    jsonArrayValues = fromObject(json, "jsonArrayValues", o -> new JsonArray((List) o));
-    dataObjectValues = fromObject(json, "dataObjectValues", o -> new TestDataObject(new JsonObject((Map<String, Object>) o)));
+    instantValues = fromObject(json, "instantValues", (o -> Instant.parse(o.toString())));
+    jsonObjectValues = fromObject(json, "jsonObjectValues", o -> (JsonObject) o);
+    jsonArrayValues = fromObject(json, "jsonArrayValues", o -> (JsonArray) o);
+    dataObjectValues = fromObject(json, "dataObjectValues", o -> new TestDataObject((JsonObject) o));
     enumValues = fromObject(json, "enumValues", o -> TestEnum.valueOf(o.toString()));
     genEnumValues = fromObject(json, "genEnumValues", o -> TestGenEnum.valueOf(o.toString()));
   }
@@ -110,6 +111,11 @@ public class DataObjectWithMaps {
 
   public DataObjectWithMaps setStringValues(Map<String, String> stringValue) {
     this.stringValues = stringValue;
+    return this;
+  }
+
+  public DataObjectWithMaps setInstantValues(Map<String, Instant> instantValues) {
+    this.instantValues = instantValues;
     return this;
   }
 
@@ -160,6 +166,9 @@ public class DataObjectWithMaps {
     }
     if (stringValues != null) {
       json.put("stringValues", toObject(stringValues));
+    }
+    if (instantValues != null) {
+      json.put("instantValues", toObject(instantValues, Instant::toString));
     }
     if (jsonObjectValues != null) {
       json.put("jsonObjectValues", toObject(jsonObjectValues));

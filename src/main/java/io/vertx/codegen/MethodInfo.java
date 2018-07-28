@@ -49,11 +49,12 @@ public class MethodInfo implements Comparable<MethodInfo> {
   List<TypeParamInfo.Method> typeParams;
   LinkedHashSet<ClassTypeInfo> ownerTypes;
   List<ParamInfo> params;
+  final boolean deprecated;
 
   public MethodInfo(Set<ClassTypeInfo> ownerTypes, String name, MethodKind kind,
                     TypeInfo returnType, Text returnDescription, boolean fluent,  boolean cacheReturn,
                     List<ParamInfo> params, String comment, Doc doc, boolean staticMethod, boolean defaultMethod,
-                    List<TypeParamInfo.Method> typeParams) {
+                    List<TypeParamInfo.Method> typeParams, boolean deprecated) {
 
 
     this.comment = comment;
@@ -69,6 +70,7 @@ public class MethodInfo implements Comparable<MethodInfo> {
     this.params = params;
     this.typeParams = typeParams;
     this.ownerTypes = new LinkedHashSet<>(ownerTypes);
+    this.deprecated = deprecated;
   }
 
   public String getName() {
@@ -99,14 +101,37 @@ public class MethodInfo implements Comparable<MethodInfo> {
    * @return the matching method parameter or null
    */
   public ParamInfo resolveClassTypeParam(TypeVariableInfo typeVar) {
+    TypeArgExpression res = resolveTypeArg(typeVar);
+    if (res != null && res.isClassType()) {
+      return res.getParam();
+    }
+    return null;
+  }
+
+  public TypeArgExpression resolveTypeArg(TypeVariableInfo typeVar) {
     for (TypeParamInfo.Method typeParam : typeParams) {
       if (typeParam.getName().equals(typeVar.getName())) {
         for (ParamInfo param : params) {
           if (param.getType().getKind() == ClassKind.CLASS_TYPE &&
-              param.getType().isParameterized()) {
+            param.getType().isParameterized()) {
             TypeInfo arg_ = ((ParameterizedTypeInfo) param.getType()).getArg(0);
-            if (arg_.isVariable() && typeVar.getName().equals(arg_.getName())) {
-              return param;
+            if (arg_.isVariable()) {
+              TypeVariableInfo ttt = (TypeVariableInfo) arg_;
+              if (ttt.getParam().equals(typeParam)) {
+                return new TypeArgExpression(TypeArgExpression.CLASS_TYPE_ARG, ttt, param, 0);
+              }
+            }
+          } else if (param.getType().getKind() == ClassKind.API && param.getType().isParameterized()) {
+            ParameterizedTypeInfo type = (ParameterizedTypeInfo) param.getType();
+            int index = 0;
+            for (TypeInfo i : type.getArgs()) {
+              if (i instanceof TypeVariableInfo) {
+                TypeVariableInfo tt = (TypeVariableInfo) i;
+                if (tt.getParam().equals(typeParam)) {
+                  return new TypeArgExpression(TypeArgExpression.API_ARG, tt, param, index);
+                }
+              }
+              index++;
             }
           }
         }
@@ -156,7 +181,7 @@ public class MethodInfo implements Comparable<MethodInfo> {
    * @return true if the method has a nullable return
    */
   public boolean isNullableReturn() {
-    return returnType instanceof TypeVariableInfo || returnType.isNullable();
+    return returnType.isNullable();
   }
 
   public List<ParamInfo> getParams() {
@@ -181,6 +206,14 @@ public class MethodInfo implements Comparable<MethodInfo> {
 
   public boolean isDefaultMethod() {
     return defaultMethod;
+  }
+
+  /**
+   *
+   * @return {@code true} if the method has a {@code @Deprecated} annotation
+   */
+  public boolean isDeprecated() {
+    return deprecated;
   }
 
   public List<TypeParamInfo.Method> getTypeParams() {

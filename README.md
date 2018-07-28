@@ -4,6 +4,13 @@
 
 This projects contains tools which allow idiomatic other language API shims to be generated from Java APIs.
 
+## Render documentation
+
+```
+> mvn clean package -Pdocs
+> open target/docs/vertx-codegen/java/index.html
+```
+
 ## Helper projects
 
 - Codegen CLI: a codegen [CLI](https://github.com/vietj/vertx-codegen-cli) to help code generating files.
@@ -18,16 +25,16 @@ A code generator consist of an _MVEL_ template declared in a `codegen.json` desc
   "name": "Groovy",
   "generators": [ {
     "kind": "class",
-    "fileName": "'groovy/' + fqn.replace('io.vertx', 'io.vertx.groovy').replace('.', '/') + '.groovy'",
-    "templateFileName": "vertx-groovy/template/groovy.templ"
+    "filename": "'groovy/' + fqn.replace('io.vertx', 'io.vertx.groovy').replace('.', '/') + '.groovy'",
+    "templateFilename": "vertx-groovy/template/groovy.templ"
   } ]
 }
 ~~~~
 
-- `fileName` is an _MVEL_ expression for the file name, returning null skips the generation.
-- `templateFileName` is the name of the _MVEL_ template to apply
+- `filename` is an _MVEL_ expression for the file name, returning null skips the generation.
+- `templateFilename` is the name of the _MVEL_ template to apply
 - `incremental` true when the template performs incremental processing, false or absent otherwise
-- `kind`: there are several kinds of generators for different use cases
+- `kind`: can be a String or an Array of Strings each representing a generator type. There are several kinds of generators for different use cases:
     - `class` : applied on each API classes
     - `package` : applied on each Java package
     - `module` : applied on each declared module, a module uniquely identifies an API
@@ -37,10 +44,65 @@ A code generator consist of an _MVEL_ template declared in a `codegen.json` desc
 
 There can be as many generators as you like.
 
+## Generated output
+
+A generator can create 3 different kinds of output: Java classes, resources and anything else
+
+### Generated Java classes
+
+A generator declaring a filename that matches a Java FQN followed by `.java` suffix will have its content generated
+as a Java class. This class will be automatically compiled by the same compiler (that's a Java compiler feature).
+
+The generated files are handled by the Java compiler (`-s` option), usually build tools configures the compiler to store
+ them in a specific build location, for instance Maven by default uses the `target/generated-sources/annotations` directory.
+
+The following generators use it:
+
+- Data object converters
+- Service proxy and service handler
+- RxJava-ified classes API
+- Groovy extension methods API
+
+### Generated resources
+
+A generator declaring a filename prefixed by `resources/` will have its content generated as a compiler resource. This
+ resource will be stored in the generated sources directory and the generated classes directory.
+
+The generated files are handled by the Java compiler (`-s` option), usually build tools configures the compiler to store
+ them in a specific build location, for instance Maven by default uses the `target/generated-sources/annotations` directory.
+
+ The following generators use it:
+
+- JavaScript generator
+- Ruby generator
+
+### Other generated files
+
+Anything else will be stored in the file system using the filename, when the `filename` is relative (it usually is)
+the target path will be resolved agains the `codegen.output` directory.
+
+The following generators use it:
+
+- Ceylon generator
+- Scala generator
+- Kotlin extension methods
+
+When the `codegen.output` is not specified, the generated files are discarded.
+
+### Relocation
+
+Sometimes you want to have a generator to output its files in another directory, you can do that with the
+`codegen.output.generator-name` compiler option:
+
+```
+<codegen.output.data_object_converters>generated</codegen.output.data_object_converters>
+```
+
+The generator will store its content in the `codegen.output/generated` directory instead as a Java class.
+
 ## Processor configuration
 
-By default the processor will only validate the source API against the Codegen rules and will not perform code
-generation. Code generation will occur when the processor `outputDirectory` option is configured:
+You can configure the `CodeGenProcessor` as any Java annotation processor, here is how to do with Maven:
 
 ~~~~
 <pluginManagement>
@@ -53,6 +115,8 @@ generation. Code generation will occur when the processor `outputDirectory` opti
         <source>1.8</source>
         <target>1.8</target>
         <encoding>${project.build.sourceEncoding}</encoding>
+        <!-- Important: there are issues with apt and incremental compilation in the maven-compiler-plugin -->
+        <useIncrementalCompilation>false</useIncrementalCompilation>
       </configuration>
       <executions>
         <execution>
@@ -101,6 +165,26 @@ sourceSets {
   }
 }
 ```
+
+Besides you can use the `processor` classified dependency that declares the annotation processor as a
+`META-INF/services/javax.annotation.processing.Processor`, if you do so, code generation happens automatically:
+
+```
+<dependency>
+  <groupid>io.vertx</groupId>
+  <artifactId>vertx-codegen</artifactId>
+  <classifier>processor</classifier>
+</dependency>
+```
+
+You still need to configure the `outputDirectory` for generating files non resources/classes as the processors
+requires this option to know where to place them.
+
+The processor is configured by a few options
+
+- `codegen.output` : where the non Java classes / non resources are stored
+- `codegen.output.<generator-name>` : relocate the output of _<generator-name>_ to another directory
+- `codegen.generators` : a comma separated list of generators, each expression is a regex, allow to filter undesired generators
 
 ## API constraints
 
@@ -284,20 +368,22 @@ to Json (via the `toJson` method).
 Data object converter can be generated with `@DataObject(generateConverter=true)` by Vert.x Core. Such
  Data object conversion recognize the following types as _member_ of any `@DataObject`:
 
-* the specific `io.vertx.core.Buffer` type
-* the set `B`
-* the set `J`
+* the set _`Basic`_
+* these specific types
+    * `io.vertx.core.Buffer`
+    * `java.time.Instant`
+* the set _`Json`_
 * any data object class annotated with `@DataObject`
 * type `java.util.List<C>` where `C` contains
     * the specific `io.vertx.core.Buffer` type
-    * the set `B`
-    * the set `J`
+    * the set _`Basic`_
+    * the set _`Json`_
     * any `@DataObject`
     * the Object type : the `List<Object>` acts like a `JsonArray`
 * type `java.util.Map<String, C>` where `C` contains
     * the specific `io.vertx.core.Buffer` type
-    * the set `B`
-    * the set `J`
+    * the set _`Basic`_
+    * the set _`Json`_
     * any `@DataObject`
     * the Object type : the `Map<String, Object>` acts like a `JsonMap`
 
@@ -338,6 +424,8 @@ are referenced from the current interface
 * `abstractSuperTypes` - subset of `superTypes` which are *abstract*
 * `methodMap` - this is a Map<String, MethodInfo> - which allows you to look up all methods with a given name
 * `importedTypes`- this is a `Set<TypeInfo>` containing the types used by this class
+* `referencedDataObjectTypes`- this is a `Set<TypeInfo>` containing the `DataObject` types used by this class
+* `referencedEnumTypes`- this is a `Set<TypeInfo>` containing the `Enum` types used by this class
 
 The `TypeInfo` represents a Java type:
 
@@ -418,7 +506,7 @@ useful when several sources files needs to generate a same file and the output i
 achieve incremental processing, a generator must declares `"incremental": true` in its descriptor.
 
 During the processing phase, the codegen processors collects all the files generated by incremental templates
-and groups them by file name. Obviously, the _fileName_ expression of the generator needs to return an appropriate
+and groups them by file name. Obviously, the _filename_ expression of the generator needs to return an appropriate
 string.
 
 At the end of the processing phase, templates are invoked for each model, pretty much like the normal templating but
@@ -453,10 +541,19 @@ With `codegen.json`:
   "generators": [ {
     "kind": "class",
     "incremental": true,
-    "fileName": "'index.html'",
-    "templateFileName": "html-index.templ"
+    "filename": "'index.html'",
+    "templateFilename": "html-index.templ"
   } ]
 }
 ```
 
 Generates an HTML page with the name of all the API classes.
+
+### Skipping generation
+
+Sometimes a template can skip the generation of the file. Setting the value of
+`skipFile` to true will do that:
+
+```
+@code{skipFile=true}
+```

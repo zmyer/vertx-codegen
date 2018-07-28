@@ -26,36 +26,15 @@ import io.vertx.codegen.doc.Text;
 import io.vertx.codegen.doc.Token;
 import io.vertx.codegen.overloadcheck.MethodOverloadChecker;
 import io.vertx.codegen.type.*;
-import io.vertx.codegen.type.VoidTypeInfo;
 
 import javax.annotation.processing.Messager;
-import javax.lang.model.element.AnnotationMirror;
-import javax.lang.model.element.Element;
-import javax.lang.model.element.ElementKind;
-import javax.lang.model.element.ExecutableElement;
-import javax.lang.model.element.Modifier;
-import javax.lang.model.element.TypeElement;
-import javax.lang.model.element.TypeParameterElement;
-import javax.lang.model.element.VariableElement;
-import javax.lang.model.type.DeclaredType;
-import javax.lang.model.type.ExecutableType;
-import javax.lang.model.type.TypeKind;
-import javax.lang.model.type.TypeMirror;
-import javax.lang.model.type.TypeVariable;
+import javax.annotation.processing.ProcessingEnvironment;
+import javax.lang.model.element.*;
+import javax.lang.model.type.*;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
-import java.lang.reflect.AnnotatedType;
-import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
@@ -66,8 +45,6 @@ import java.util.stream.Collectors;
  */
 public class ClassModel implements Model {
 
-  private static final Logger logger = Logger.getLogger(ClassModel.class.getName());
-
   public static final String VERTX_READ_STREAM = "io.vertx.core.streams.ReadStream";
   public static final String VERTX_WRITE_STREAM = "io.vertx.core.streams.WriteStream";
   public static final String VERTX_ASYNC_RESULT = "io.vertx.core.AsyncResult";
@@ -75,12 +52,13 @@ public class ClassModel implements Model {
   public static final String JSON_OBJECT = "io.vertx.core.json.JsonObject";
   public static final String JSON_ARRAY = "io.vertx.core.json.JsonArray";
   public static final String VERTX = "io.vertx.core.Vertx";
+  private static final Logger logger = Logger.getLogger(ClassModel.class.getName());
 
-  protected final MethodOverloadChecker methodOverloadChecker;
+  protected final ProcessingEnvironment env;
+  protected final AnnotationValueInfoFactory annotationValueInfoFactory;
   protected final Messager messager;
   protected final TypeMirrorFactory typeFactory;
   protected final Doc.Factory docFactory;
-  protected final Map<String, TypeElement> sources;
   protected final TypeElement modelElt;
   protected final Elements elementUtils;
   protected final Types typeUtils;
@@ -90,6 +68,7 @@ public class ClassModel implements Model {
   protected Set<ClassTypeInfo> importedTypes = new HashSet<>();
   protected Set<ApiTypeInfo> referencedTypes = new HashSet<>();
   protected Set<ClassTypeInfo> referencedDataObjectTypes = new HashSet<>();
+  protected Set<EnumTypeInfo> referencedEnumTypes = new HashSet<>();
   protected boolean concrete;
   protected ClassTypeInfo type;
   protected String ifaceSimpleName;
@@ -99,22 +78,37 @@ public class ClassModel implements Model {
   protected Doc doc;
   protected List<TypeInfo> superTypes = new ArrayList<>();
   protected TypeInfo concreteSuperType;
+  private List<TypeInfo> superTypeArguments;
   protected List<TypeInfo> abstractSuperTypes = new ArrayList<>();
-  protected TypeInfo handlerSuperType;
   // The methods, grouped by name
   protected Map<String, List<MethodInfo>> methodMap = new LinkedHashMap<>();
+  protected Map<String, List<AnnotationValueInfo>> methodAnnotationsMap = new LinkedHashMap<>();
+  protected List<AnnotationValueInfo> annotations;
+  protected final boolean deprecated;
 
-  public ClassModel(MethodOverloadChecker methodOverloadChecker,
-                    Messager messager,  Map<String, TypeElement> sources, Elements elementUtils,
-                    Types typeUtils, TypeElement modelElt) {
-    this.methodOverloadChecker = methodOverloadChecker;
+  public ClassModel(ProcessingEnvironment env, TypeElement modelElt) {
+    this.elementUtils = env.getElementUtils();
+    this.typeUtils = env.getTypeUtils();
+    this.env = env;
     this.typeFactory = new TypeMirrorFactory(elementUtils, typeUtils);
-    this.docFactory = new Doc.Factory(messager, elementUtils, typeUtils, typeFactory, modelElt);
-    this.messager = messager;
-    this.sources = sources;
-    this.elementUtils = elementUtils;
-    this.typeUtils = typeUtils;
+    this.docFactory = new Doc.Factory(env.getMessager(), elementUtils, typeUtils, typeFactory, modelElt);
+    this.messager = env.getMessager();
     this.modelElt = modelElt;
+    this.annotationValueInfoFactory = new AnnotationValueInfoFactory(typeFactory);
+    this.deprecated = modelElt.getAnnotation(Deprecated.class) != null;
+  }
+
+  private static boolean rawTypeIs(TypeInfo type, Class<?>... classes) {
+    if (type instanceof ParameterizedTypeInfo) {
+      String rawClassName = type.getRaw().getName();
+      for (Class<?> c : classes) {
+        if (rawClassName.equals(c.getName())) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   @Override
@@ -168,6 +162,13 @@ public class ClassModel implements Model {
     return referencedDataObjectTypes;
   }
 
+  /**
+   * @return all the referenced enum types
+   */
+  public Set<EnumTypeInfo> getReferencedEnumTypes() {
+    return referencedEnumTypes;
+  }
+
   public String getIfaceSimpleName() {
     return ifaceSimpleName;
   }
@@ -208,8 +209,8 @@ public class ClassModel implements Model {
     return abstractSuperTypes;
   }
 
-  public TypeInfo getHandlerSuperType() {
-    return handlerSuperType;
+  public TypeInfo getHandlerType() {
+    return (type.getKind() == ClassKind.API) ? ((ApiTypeInfo)type).getHandlerArg() : null;
   }
 
   public Map<String, List<MethodInfo>> getMethodMap() {
@@ -221,27 +222,21 @@ public class ClassModel implements Model {
   }
 
   public List<TypeInfo> getSuperTypeArguments() {
-    if (concreteSuperType != null && concreteSuperType.isParameterized()) {
-      DeclaredType tm = (DeclaredType) modelElt.asType();;
-      List<? extends TypeMirror> st = typeUtils.directSupertypes(tm);
-      for (TypeMirror tmSuper: st) {
-        if (tmSuper.getKind() == TypeKind.DECLARED) {
-          DeclaredType abc = (DeclaredType) tmSuper;
-          TypeElement tt = (TypeElement) abc.asElement();
-          if (tt.getQualifiedName().toString().equals(concreteSuperType.getRaw().getName())) {
-            List<TypeInfo> list = new ArrayList<>();
-            int size = tt.getTypeParameters().size();
-            for (int i = 0; i< size;i++) {
-              TypeMirror q = abc.getTypeArguments().get(i);
-              TypeInfo ti =  typeFactory.create(q);
-              list.add(ti);
-            }
-            return list;
-          }
-        }
-      }
-    }
-    return null;
+    return superTypeArguments;
+  }
+
+  /**
+   * @return all the annotations on this class
+   */
+  public List<AnnotationValueInfo> getAnnotations() {
+    return annotations;
+  }
+
+  /**
+   * @return a map of the method's annotations for this class, by method name.
+   */
+  public Map<String, List<AnnotationValueInfo>> getMethodAnnotations() {
+    return methodAnnotationsMap;
   }
 
   private void sortMethodMap(Map<String, List<MethodInfo>> map) {
@@ -270,7 +265,7 @@ public class ClassModel implements Model {
   }
 
   protected void checkReturnType(ExecutableElement elem, TypeInfo type, TypeMirror typeMirror) {
-    if (type instanceof VoidTypeInfo) {
+    if (type.isVoid()) {
       return;
     }
     if (isLegalNonCallableReturnType(type)) {
@@ -448,7 +443,6 @@ public class ClassModel implements Model {
     return false;
   }
 
-
   private boolean isVertxGenInterface(TypeInfo type, boolean allowParameterized) {
     if (type.getKind() == ClassKind.API) {
       if (type.isParameterized()) {
@@ -511,33 +505,42 @@ public class ClassModel implements Model {
 
   private boolean isLegalCallbackValueType(TypeInfo type) {
     if (type.getKind() == ClassKind.VOID) {
-      return !type.isNullable();
+      return true;
     }
     return isLegalNonCallableReturnType(type);
   }
 
   private void determineApiTypes() {
-    collectedTypes.stream().
+    importedTypes = collectedTypes.stream().
         map(ClassTypeInfo::getRaw).
         flatMap(Helper.instanceOf(ClassTypeInfo.class)).
         filter(t -> !t.getPackageName().equals(ifaceFQCN)).
-        forEach(importedTypes::add);
-    collectedTypes.stream().
+        collect(Collectors.toSet());
+
+    referencedTypes = collectedTypes.stream().
         map(ClassTypeInfo::getRaw).
         flatMap(Helper.instanceOf(ApiTypeInfo.class)).
         filter(t -> !t.equals(type.getRaw())).
-        forEach(referencedTypes::add);
-    collectedTypes.stream().
+        collect(Collectors.toSet());
+
+    referencedDataObjectTypes = collectedTypes.stream().
         map(ClassTypeInfo::getRaw).
         flatMap(Helper.instanceOf(ClassTypeInfo.class)).
         filter(t -> t.getKind() == ClassKind.DATA_OBJECT).
-        forEach(referencedDataObjectTypes::add);
+        collect(Collectors.toSet());
+
+    referencedEnumTypes = collectedTypes.stream().
+      map(ClassTypeInfo::getRaw).
+      flatMap(Helper.instanceOf(EnumTypeInfo.class)).
+      filter(t -> t.getKind() == ClassKind.ENUM).
+      collect(Collectors.toSet());
   }
 
-  boolean process() {
+  public boolean process() {
     if (!processed) {
-      traverseElem(modelElt);
+      traverseType(modelElt);
       determineApiTypes();
+      processTypeAnnotations();
       processed = true;
       return true;
     } else {
@@ -545,7 +548,15 @@ public class ClassModel implements Model {
     }
   }
 
-  private void traverseElem(Element elem) {
+  private void processTypeAnnotations() {
+    annotations = elementUtils
+      .getAllAnnotationMirrors(modelElt)
+      .stream()
+      .map(annotationValueInfoFactory::processAnnotation)
+      .collect(Collectors.toList());
+  }
+
+  private void traverseType(Element elem) {
     switch (elem.getKind()) {
       case ENUM:
       case CLASS: {
@@ -602,11 +613,28 @@ public class ClassModel implements Model {
                 }
                 break;
               }
-              case HANDLER:
-                handlerSuperType = superTypeInfo;
-                break;
             }
             superTypeInfo.collectImports(collectedTypes);
+          }
+        }
+        if (concreteSuperType != null && concreteSuperType.isParameterized()) {
+          tm = (DeclaredType) modelElt.asType();;
+          st = typeUtils.directSupertypes(tm);
+          for (TypeMirror tmSuper: st) {
+            if (tmSuper.getKind() == TypeKind.DECLARED) {
+              DeclaredType abc = (DeclaredType) tmSuper;
+              TypeElement tt = (TypeElement) abc.asElement();
+              if (tt.getQualifiedName().toString().equals(concreteSuperType.getRaw().getName())) {
+                List<TypeInfo> list = new ArrayList<>();
+                int size = tt.getTypeParameters().size();
+                for (int i = 0; i< size;i++) {
+                  TypeMirror q = abc.getTypeArguments().get(i);
+                  TypeInfo ti =  typeFactory.create(q);
+                  list.add(ti);
+                }
+                superTypeArguments = list;
+              }
+            }
           }
         }
         break;
@@ -615,8 +643,15 @@ public class ClassModel implements Model {
 
     // Traverse nested elements that are not methods (like nested interfaces)
     for (Element enclosedElt : elem.getEnclosedElements()) {
-      if (enclosedElt.getKind() != ElementKind.METHOD) {
-        traverseElem(enclosedElt);
+      if (!isGenIgnore(enclosedElt)) {
+        switch (enclosedElt.getKind()) {
+          case METHOD:
+          case FIELD:
+            // Allowed
+            break;
+          default:
+            throw new GenException(elem, "@VertxGen can only declare methods and not " + elem.asType().toString());
+        }
       }
     }
 
@@ -641,7 +676,7 @@ public class ClassModel implements Model {
 
         // Ambiguous
         try {
-          methodOverloadChecker.checkAmbiguous(meths);
+          MethodOverloadChecker.INSTANCE.checkAmbiguous(meths);
         } catch (RuntimeException e) {
           throw new GenException(elem, e.getMessage());
         }
@@ -657,9 +692,12 @@ public class ClassModel implements Model {
     }
   }
 
+  private static boolean isGenIgnore(Element elt) {
+    return elt.getAnnotation(GenIgnore.class) != null;
+  }
+
   private void addMethod(ExecutableElement modelMethod) {
-    boolean isIgnore = modelMethod.getAnnotation(GenIgnore.class) != null;
-    if (isIgnore) {
+    if (isGenIgnore(modelMethod)) {
       return;
     }
     Set<Modifier> mods = modelMethod.getModifiers();
@@ -694,18 +732,8 @@ public class ClassModel implements Model {
     }
 
     //
-    List<Method> reflectMethods;
-    List<ExecutableElement> modelMethods;
-    Method reflectMethod = Helper.getReflectMethod(modelMethod);
-    if (reflectMethod != null) {
-      reflectMethods = new ArrayList<>();
-      reflectMethods.add(reflectMethod);
-      modelMethods = null;
-    } else {
-      reflectMethods = null;
-      modelMethods = new ArrayList<>();
-      modelMethods.add(modelMethod);
-    }
+    List<ExecutableElement> modelMethods = new ArrayList<>();
+    modelMethods.add(modelMethod);
 
     // Owner types
     Set<ClassTypeInfo> ownerTypes = new HashSet<>();
@@ -734,14 +762,7 @@ public class ClassModel implements Model {
             flatMap(Helper.FILTER_METHOD).
             filter(meth -> elementUtils.overrides(modelMethod, meth, modelElt)).
             forEach(overridenMethodElt -> {
-              if (reflectMethods != null) {
-                Method overridenMethodRef = Helper.getReflectMethod(overridenMethodElt);
-                if (overridenMethodRef != null) {
-                  reflectMethods.add(overridenMethodRef);
-                }
-              } else {
-                modelMethods.add(overridenMethodElt);
-              }
+              modelMethods.add(overridenMethodElt);
               ownerTypes.add(typeFactory.create((DeclaredType) ancestorElt.asType()).getRaw());
             });
       }
@@ -770,7 +791,7 @@ public class ClassModel implements Model {
     }
 
     //
-    List<ParamInfo> mParams = getParams(reflectMethods, modelMethods, modelMethod, paramDescs);
+    List<ParamInfo> mParams = getParams(modelMethods, modelMethod, paramDescs);
 
     //
     AnnotationMirror fluentAnnotation = Helper.resolveMethodAnnotation(Fluent.class, elementUtils, typeUtils, declaringElt, modelMethod);
@@ -791,12 +812,7 @@ public class ClassModel implements Model {
     }
 
     //
-    TypeUse returnTypeUse;
-    if (reflectMethods != null) {
-      returnTypeUse = TypeUse.createTypeUse(reflectMethods.stream().map(Method::getAnnotatedReturnType).toArray(AnnotatedType[]::new));
-    } else {
-      returnTypeUse = TypeUse.createTypeUse(modelMethods.stream().map(ExecutableElement::getReturnType).toArray(TypeMirror[]::new));
-    }
+    TypeUse returnTypeUse = TypeUse.createReturnTypeUse(env,  modelMethods.toArray(new ExecutableElement[modelMethods.size()]));
 
     ExecutableType methodType = (ExecutableType) typeUtils.asMemberOf((DeclaredType) modelElt.asType(), modelMethod);
     TypeInfo returnType;
@@ -808,7 +824,7 @@ public class ClassModel implements Model {
       throw genEx;
     }
     returnType.collectImports(collectedTypes);
-    if (isCacheReturn && returnType instanceof VoidTypeInfo) {
+    if (isCacheReturn && returnType.isVoid()) {
       throw new GenException(modelMethod, "void method can't be marked with @CacheReturn");
     }
     String methodName = modelMethod.getSimpleName().toString();
@@ -823,7 +839,7 @@ public class ClassModel implements Model {
     // Determine method kind + validate
     MethodKind kind = MethodKind.OTHER;
     int lastParamIndex = mParams.size() - 1;
-    if (lastParamIndex >= 0 && (returnType instanceof VoidTypeInfo || isFluent)) {
+    if (lastParamIndex >= 0 && (returnType.isVoid() || isFluent)) {
       TypeInfo lastParamType = mParams.get(lastParamIndex).type;
       if (lastParamType.getKind() == ClassKind.HANDLER) {
         TypeInfo typeArg = ((ParameterizedTypeInfo) lastParamType).getArgs().get(0);
@@ -834,9 +850,10 @@ public class ClassModel implements Model {
         }
       }
     }
+    boolean methodDeprecated = modelMethod.getAnnotation(Deprecated.class) != null;
 
     MethodInfo methodInfo = createMethodInfo(ownerTypes, methodName, comment, doc, kind,
-        returnType, returnDesc, isFluent, isCacheReturn, mParams, modelMethod, isStatic, isDefault, typeParams, declaringElt);
+        returnType, returnDesc, isFluent, isCacheReturn, mParams, modelMethod, isStatic, isDefault, typeParams, declaringElt, methodDeprecated);
     checkMethod(methodInfo);
 
     // Check we don't hide another method, we don't check overrides but we are more
@@ -858,6 +875,7 @@ public class ClassModel implements Model {
     if (methodsByName == null) {
       methodsByName = new ArrayList<>();
       methodMap.put(methodInfo.getName(), methodsByName);
+      methodAnnotationsMap.put(methodInfo.getName(), modelMethod.getAnnotationMirrors().stream().map(annotationValueInfoFactory::processAnnotation).collect(Collectors.toList()));
     }
     methodsByName.add(methodInfo);
     methodInfo.collectImports(collectedTypes);
@@ -878,9 +896,9 @@ public class ClassModel implements Model {
                                         Text returnDescription,
                                         boolean isFluent, boolean isCacheReturn, List<ParamInfo> mParams,
                                         ExecutableElement methodElt, boolean isStatic, boolean isDefault, ArrayList<TypeParamInfo.Method> typeParams,
-                                        TypeElement declaringElt) {
+                                        TypeElement declaringElt, boolean methodDeprecated) {
     return new MethodInfo(ownerTypes, methodName, kind, returnType, returnDescription,
-      isFluent, isCacheReturn, mParams, comment, doc, isStatic, isDefault, typeParams);
+      isFluent, isCacheReturn, mParams, comment, doc, isStatic, isDefault, typeParams, methodDeprecated);
   }
 
   // This is a hook to allow different model implementations to check methods in different ways
@@ -901,21 +919,16 @@ public class ClassModel implements Model {
     return bound.getKind() == TypeKind.DECLARED && bound.toString().equals(Object.class.getName());
   }
 
-  private List<ParamInfo> getParams(List<Method> reflectMethods, List<ExecutableElement> modelMethods, ExecutableElement methodElt, Map<String, String> descs) {
+  private List<ParamInfo> getParams(List<ExecutableElement> modelMethods, ExecutableElement methodElt, Map<String, String> descs) {
     ExecutableType methodType = (ExecutableType) typeUtils.asMemberOf((DeclaredType) modelElt.asType(), methodElt);
+    ExecutableType methodType2 = (ExecutableType) methodElt.asType();
     List<? extends VariableElement> params = methodElt.getParameters();
     List<ParamInfo> mParams = new ArrayList<>();
     for (int i = 0; i < params.size();i++) {
       VariableElement param = params.get(i);
       TypeMirror type = methodType.getParameterTypes().get(i);
       TypeInfo typeInfo;
-      int index = i;
-      TypeUse typeUse;
-      if (reflectMethods != null) {
-        typeUse = TypeUse.createTypeUse(reflectMethods.stream().map(m -> m.getAnnotatedParameterTypes()[index]).toArray(AnnotatedType[]::new));
-      } else {
-        typeUse = TypeUse.createTypeUse(modelMethods.stream().map(m -> m.getParameters().get(index).asType()).toArray(TypeMirror[]::new));
-      }
+      TypeUse typeUse = TypeUse.createParamTypeUse(env, modelMethods.toArray(new ExecutableElement[modelMethods.size()]), i);
       try {
         typeInfo = typeFactory.create(typeUse, type);
       } catch (Exception e) {
@@ -925,10 +938,23 @@ public class ClassModel implements Model {
       String name = param.getSimpleName().toString();
       String desc = descs.get(name);
       Text text = desc != null ? new Text(desc).map(Token.tagMapper(elementUtils, typeUtils, modelElt)) : null;
-      ParamInfo mParam = new ParamInfo(i, name, text, typeInfo);
+      TypeInfo unresolvedTypeInfo;
+      try {
+        unresolvedTypeInfo = typeFactory.create(typeUse, methodType2.getParameterTypes().get(i));
+      } catch (Exception e) {
+        throw new GenException(param, e.getMessage());
+      }
+      ParamInfo mParam = new ParamInfo(i, name, text, typeInfo, unresolvedTypeInfo);
       mParams.add(mParam);
     }
     return mParams;
+  }
+
+  /**
+   * @return {@code true} if the class has a {@code @Deprecated} annotation
+   */
+  public boolean isDeprecated() {
+    return deprecated;
   }
 
   @Override
@@ -947,25 +973,16 @@ public class ClassModel implements Model {
     vars.put("superTypes", getSuperTypes());
     vars.put("concreteSuperType", getConcreteSuperType());
     vars.put("abstractSuperTypes", getAbstractSuperTypes());
-    vars.put("handlerSuperType", getHandlerSuperType());
+    vars.put("handlerType", getHandlerType());
     vars.put("methodsByName", getMethodMap());
+    vars.put("classAnnotations", getAnnotations());
+    vars.put("annotationsByMethodName", getMethodAnnotations());
     vars.put("referencedDataObjectTypes", getReferencedDataObjectTypes());
+    vars.put("referencedEnumTypes", getReferencedEnumTypes());
     vars.put("typeParams", getTypeParams());
     vars.put("instanceMethods", getInstanceMethods());
     vars.put("staticMethods", getStaticMethods());
+    vars.put("deprecated", isDeprecated());
     return vars;
-  }
-
-  private static boolean rawTypeIs(TypeInfo type, Class<?>... classes) {
-    if (type instanceof ParameterizedTypeInfo) {
-      String rawClassName = type.getRaw().getName();
-      for (Class<?> c : classes) {
-        if (rawClassName.equals(c.getName())) {
-          return true;
-        }
-      }
-    }
-
-    return false;
   }
 }

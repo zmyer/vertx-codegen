@@ -1,7 +1,6 @@
 package io.vertx.test.codegen;
 
 import io.vertx.codegen.ClassModel;
-import io.vertx.codegen.Generator;
 import io.vertx.codegen.MethodInfo;
 import io.vertx.codegen.doc.Doc;
 import io.vertx.codegen.doc.Tag;
@@ -51,6 +50,8 @@ public class DocTest {
     assertComment("@tag1 value", "", null, new Tag("tag1", "value"));
     assertComment("\n@tag1 value", "", null, new Tag("tag1", "value"));
     assertComment("@tag1 value1\n@tag2 value2", "", null, new Tag("tag1", "value1"), new Tag("tag2", "value2"));
+
+    assertComment("@deprecated\n@see #handler(RountingContext)", "", null, new Tag("deprecated", ""), new Tag("see", "#handler(RountingContext)"));
   }
 
   private void assertComment(String text, String expectedFirstSentence, String expectedBody, Tag... expectedBlockTags) {
@@ -122,7 +123,7 @@ public class DocTest {
 
   @Test
   public void testLinkToMethodInSameType() throws Exception {
-    ClassModel model = new Generator().generateClass(LinkToMethodInSameType.class);
+    ClassModel model = new GeneratorHelper().generateClass(LinkToMethodInSameType.class);
     MethodInfo method = model.getMethodMap().get("m").get(0);
     Doc doc = method.getDoc();
     List<Token> tokens = doc.getTokens();
@@ -136,7 +137,7 @@ public class DocTest {
 
   @Test
   public void testLinkToSameType() throws Exception {
-    ClassModel model = new Generator().generateClass(LinkToSameType.class);
+    ClassModel model = new GeneratorHelper().generateClass(LinkToSameType.class);
     MethodInfo method = model.getMethodMap().get("m").get(0);
     Doc doc = method.getDoc();
     List<Token> tokens = doc.getTokens();
@@ -149,7 +150,7 @@ public class DocTest {
 
   @Test
   public void testLinkToEnum() throws Exception {
-    ClassModel model = new Generator().generateClass(LinkToEnum.class);
+    ClassModel model = new GeneratorHelper().generateClass(LinkToEnum.class);
     MethodInfo method = model.getMethodMap().get("m").get(0);
     Doc doc = method.getDoc();
     List<Token> tokens = doc.getTokens();
@@ -162,7 +163,7 @@ public class DocTest {
 
   @Test
   public void testLinkLabel() throws Exception {
-    ClassModel model = new Generator().generateClass(LinkLabel.class);
+    ClassModel model = new GeneratorHelper().generateClass(LinkLabel.class);
     MethodInfo method = model.getMethodMap().get("m").get(0);
     Doc doc = method.getDoc();
     List<Token> tokens = doc.getTokens();
